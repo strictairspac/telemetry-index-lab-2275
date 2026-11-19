@@ -29,3 +29,17 @@ class CandidateInput(BaseModel):
 class ExperimentInput(BaseModel):
  name:str=Field(min_length=2,max_length=120)
  candidate_id:int
+class VoidInput(BaseModel):
+ sensor_id:int=Field(ge=1,le=1000)
+ start_at:str
+ end_at:str
+ reason:str=Field(min_length=2,max_length=500)
+ # Client-generated idempotency key. Re-sending the same key after an interrupted
+ # confirmation returns the original registration instead of creating another one.
+ key:str|None=Field(default=None,max_length=64)
+ @model_validator(mode='after')
+ def valid_window(self):
+  a=datetime.fromisoformat(self.start_at);b=datetime.fromisoformat(self.end_at)
+  if a>=b:raise ValueError('结束时间必须晚于开始时间')
+  self.start_at=a.isoformat(timespec='seconds');self.end_at=b.isoformat(timespec='seconds')
+  return self

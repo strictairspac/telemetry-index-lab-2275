@@ -5,7 +5,7 @@
 ## 业务场景
 上游来自泵站温升告警与值班 SQL 文件。过去同事在表格记录列顺序、手动建索引后截取计划，存在参数版本混乱、前后结果不一致未发现、写入代价未记录三项痛点。本站生成固定 SELECT，在专用 5,000 行遥测库内串行建索引、采集执行计划、保存输入快照，交给可靠性复核人判断。
 
-模块：工作负载录入/编辑、候选列序设计、后台试验队列、真实结果对比/JSON 导出；管理员另有审计。核心实体 workloads / candidates / experiments，样本表 telemetry。
+模块：工作负载录入/编辑、候选列序设计、后台试验队列、真实结果对比/JSON 导出、作废登记；管理员另有审计。核心实体 workloads / candidates / experiments / voids，样本表 telemetry。
 
 ## 快速启动
 ```sh
@@ -38,10 +38,20 @@ docker compose exec -T backend python -m scripts.seed_demo
 ## 算法与真实边界
 Python 对索引从左到右分析，匹配相等列每列 +40，首个时间范围列 +20 后停止，最高100。缺失首列停止。启发式不等于优化器成本。worker 使用 MySQL GET_LOCK 串行隔离，删除遗留试验索引 → 无候选基线 EXPLAIN/查询5次 → 建候选索引/ANALYZE → 查询5次和EXPLAIN → 校验有序全结果SHA-256 → 清理索引。数据固定、查询参数固定可复现，耗时受缓存和驱动波动影响，不保证提速。20 行写探针是真实 INSERT 后 ROLLBACK，可能消耗 auto_increment 序列号。试验只修改专用 telemetry 表，不能接受任意SQL或远端数据库。任务使用简单 Redis 单消费者，进程崩溃后的 running 任务不自动重试，保留状态供人工复查并新建任务。
 
+## 作废校准
+校准发现某段读数有误时，在「作废登记」先预览、再确认。作废只排除读数，不改变试验本身时长，也不删除任何报告编号。
+
+- **生效范围**：确认后的新试验在基线与候选两侧都排除作废读数（`NOT EXISTS` 子查询）。
+- **历史报告**：只按逐条证据判定——报告发布时保存其读到的记录 id，确认作废时取交集，不重新执行任何历史查询。曾查到作废记录的报告标记「已失效」，编号保留并在结果页显示原因。
+- **缺证据的旧报告**：升级前发布的报告没有逐条 id，只有输入时段与作废窗口重叠时才标「待核验」，不凭猜测判失效。
+- **并发发布**：发布与确认都要锁 `void_guard` 单行（MySQL `SELECT ... FOR UPDATE`）。二者竞争时，要么确认扫描看到已发布报告，要么发布读到已提交的作废记录，同一时段内命中与未命中的报告得到不同结论，不会漏判。
+- **幂等重试**：确认请求带 `key`（或内容相同）时，重试返回首次登记，不重复登记；发布本身幂等，重投消息不覆盖已有结论。
+- 审计记录 `void.confirm` 含作废编号、窗口、影响读数与判定计数。
+
 ## 技术与目录
 Python3.11 / FastAPI / SQLAlchemy / PyMySQL / Redis；MySQL8.0；原生 HTML CSS ES modules；nginx1.27。恰好五容器 frontend/backend/worker/db/redis，均有健康探针。数据库、Redis、应用产物各用命名卷。
 
-`backend/src` 按 models/schemas/services/controllers/routes/middlewares/config/constants/utils 分层；`backend/scripts/seed_demo.py`；`backend/migrations` 记录元数据建表版本。`frontend/src` 按 api/stores/pages/components/common/hooks/router/types/constants/utils 分层。截图、测试脚本及测试报告在批次根目录 `test-artifacts/gb-4102`，不放源码。
+`backend/src` 按 models/schemas/services/controllers/routes/middlewares/config/constants/utils 分层；`backend/scripts/seed_demo.py`；`backend/migrations` 记录元数据建表版本（v2 见 `002_voids.md`，启动时由 `src/config/schema.py` 幂等补列）。`frontend/src` 按 api/stores/pages/components/common/hooks/router/types/constants/utils 分层。后端测试在 `backend/tests`（含 MySQL 跨进程加锁用例，SQLite 下自动跳过）。截图、测试脚本及测试报告在批次根目录 `test-artifacts/gb-4102`，不放源码。
 
 共享枚举：角色和状态在 `backend/src/constants/enums.py` 与 `frontend/src/constants/enums.js`；服务/权限与前端状态组件使用一致枚举。前端共享 table/status/feedback；hooks forms/poll。双字体来自 Google Fonts（网络不可用时回退 sans-serif/monospace）。赭红工业试验纸视觉，支持桌面/平板/手机。
 

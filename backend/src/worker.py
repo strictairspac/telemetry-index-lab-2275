@@ -6,6 +6,7 @@ from src.models.workload import Workload
 from src.models.candidate import Candidate
 from src.models.experiment import Experiment
 from src.services.index_algorithm import run
+from src.services.voids import publish
 from src.services.audit import log
 q=redis.Redis.from_url(REDIS_URL)
 while True:
@@ -20,7 +21,7 @@ while True:
    row.status='running';snapshot=row.snapshot;s.commit()
   try:
    result=run(snapshot)
-   with Session() as s:r=s.get(Experiment,run_id);r.result=result;r.status='completed';s.commit()
+   with Session() as s:publish(s,run_id,result)
    log('worker','experiment.completed',str(run_id))
   except Exception as exc:
    logging.exception('trial failed')

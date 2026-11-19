@@ -14,4 +14,5 @@ def create(data:ExperimentInput,u=Depends(writer)):return start_experiment(data,
 def detail(item_id:int,u=Depends(current)):return experiments.detail(item_id)
 @router.get('/experiments/{item_id}/export')
 def export(item_id:int,u=Depends(current)):
- return Response(json.dumps(experiments.detail(item_id),ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="trial-{item_id}.json"'})
+ body=json.dumps(experiments.detail(item_id),ensure_ascii=False,indent=2)
+ return Response(body,media_type='application/json',headers={'Content-Disposition':f'attachment; filename="trial-{item_id}.json"'})

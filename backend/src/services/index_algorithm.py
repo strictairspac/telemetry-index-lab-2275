@@ -3,6 +3,7 @@ import hashlib,json,time,statistics
 from sqlalchemy import text
 from src.config.database import engine
 from src.constants.enums import COLUMNS
+from src.services.telemetry_query import build_query
 def prefix_score(columns,w):
  equality={'sensor_id'}|({'device_type'} if w.get('device_type') else set())
  score=0;matched=[];reason=[]
@@ -23,10 +24,7 @@ def _write_probe(conn):
 def run(snapshot):
  w=snapshot['workload'];columns=snapshot['candidate']['columns']
  if not columns or any(c not in COLUMNS for c in columns) or len(set(columns))!=len(columns):raise ValueError('invalid index columns')
- params={'sensor':w['sensor_id'],'start':w['start_at'],'end':w['end_at']}
- query='SELECT id,sensor_id,recorded_at,device_type,value FROM telemetry WHERE sensor_id=:sensor AND recorded_at>=:start AND recorded_at<=:end'
- if w.get('device_type'):query+=' AND device_type=:device';params['device']=w['device_type']
- query+=' ORDER BY id'
+ query,params=build_query(w)
  with engine.connect() as conn:
   if conn.execute(text("SELECT GET_LOCK('index_trial_serial',30)")).scalar()!=1:raise RuntimeError('another trial holds lock')
   try:
@@ -41,7 +39,11 @@ def run(snapshot):
    result,after_ms,after_samples=_timed(conn,query,params)
    write_after=_write_probe(conn)
    canonical=lambda records:hashlib.sha256(json.dumps(records,sort_keys=True).encode()).hexdigest()
-   return {'prefix':prefix_score(columns,w),'query':query,'parameters':params,'rows':len(result),'before_plan':before,'after_plan':after,'before_median_ms':before_ms,'after_median_ms':after_ms,'before_samples_ms':before_samples,'after_samples_ms':after_samples,'insert20_before_ms':write_before,'insert20_after_ms':write_after,'equal_results':canonical(rows)==canonical(result),'checksum':canonical(result),'preview':result[:10],'limitations':['5000-row deterministic dataset; timings include Python driver and cache effects','20-row write probe is rolled back; sequence gaps are normal','heuristic prefix score is not MySQL optimizer cost; no guaranteed speedup']}
+   # Evidence covers both sides of the comparison: a void confirmed between the
+   # baseline and candidate passes would otherwise leave the report "valid" even
+   # though its baseline read data that is now void.
+   evidence_ids=sorted({int(r['id']) for r in rows}|{int(r['id']) for r in result})
+   return {'prefix':prefix_score(columns,w),'query':query,'parameters':params,'rows':len(result),'evidence_ids':evidence_ids,'voided_excluded':True,'before_plan':before,'after_plan':after,'before_median_ms':before_ms,'after_median_ms':after_ms,'before_samples_ms':before_samples,'after_samples_ms':after_samples,'insert20_before_ms':write_before,'insert20_after_ms':write_after,'equal_results':canonical(rows)==canonical(result),'checksum':canonical(result),'preview':result[:10],'limitations':['5000-row deterministic dataset; timings include Python driver and cache effects','confirmed voided readings are excluded from both baseline and candidate query','20-row write probe is rolled back; sequence gaps are normal','heuristic prefix score is not MySQL optimizer cost; no guaranteed speedup']}
   finally:
    conn.rollback()
    try:
